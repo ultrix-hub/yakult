@@ -524,6 +524,7 @@ const Store = {
     firestoreCollection: 'appData',
     firestoreDocId: 'default',
     db: null,
+    unsubscribe: null,
     data: {
         customers: [],
         products: [],
@@ -550,6 +551,7 @@ const Store = {
             if (doc.exists) {
                 this.data = doc.data();
                 localStorage.setItem(this.key, JSON.stringify(this.data));
+                this.startRealtimeSync();
                 return;
             }
         } catch (err) {
@@ -563,6 +565,8 @@ const Store = {
         } else {
             this.seed(); // 初期データ投入
         }
+
+        this.startRealtimeSync();
     },
 
     save() {
@@ -573,6 +577,24 @@ const Store = {
             .doc(this.firestoreDocId)
             .set(this.data)
             .catch(err => console.error('Firestore保存失敗', err));
+    },
+
+    startRealtimeSync() {
+        if (!this.db || this.unsubscribe) return;
+        const docRef = this.db.collection(this.firestoreCollection).doc(this.firestoreDocId);
+        this.unsubscribe = docRef.onSnapshot((doc) => {
+            if (!doc.exists) return;
+            const incoming = doc.data();
+            const current = JSON.stringify(this.data);
+            const next = JSON.stringify(incoming);
+            if (current === next) return;
+
+            this.data = incoming;
+            localStorage.setItem(this.key, JSON.stringify(this.data));
+            router.navigate(router.current);
+        }, (err) => {
+            console.error('Firestoreリアルタイム同期失敗', err);
+        });
     },
 
     seed() {
@@ -1532,6 +1554,9 @@ const settingsManager = {
 
 document.addEventListener('DOMContentLoaded', async () => {
     await Store.init();
+    window.addEventListener('beforeunload', () => {
+        if (Store.unsubscribe) Store.unsubscribe();
+    });
     const now = new Date();
     document.getElementById('header-date').innerText = `${now.getMonth()+1}/${now.getDate()}`;
     router.navigate('home');
