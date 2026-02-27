@@ -1159,6 +1159,7 @@ const masterManager = {
                     <div class="list-item-action">
                         ${c.address ? `<button class="btn btn-sm btn-secondary" onclick="window.open('https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.address)}')">地図</button>` : ''}
                         <button class="btn btn-sm btn-secondary" onclick="masterManager.openModal('customer', '${c.id}')">編集</button>
+                        <button class="btn btn-sm btn-danger" onclick="masterManager.deleteCustomer('${c.id}')">削除</button>
                     </div>
                 </div>
             `;
@@ -1181,6 +1182,7 @@ const masterManager = {
                     </div>
                     <div class="list-item-action">
                         <button class="btn btn-sm btn-secondary" onclick="masterManager.openModal('product', '${p.id}')">編集</button>
+                        <button class="btn btn-sm btn-danger" onclick="masterManager.deleteProduct('${p.id}')">削除</button>
                     </div>
                 </div>
             `;
@@ -1300,6 +1302,26 @@ const masterManager = {
         this.closeModal();
         if (type === 'customer') this.renderCustomers();
         else this.renderProducts();
+    },
+
+    deleteCustomer(id) {
+        const customer = Store.data.customers.find(c => c.id === id);
+        if (!customer) return;
+        if (!confirm(`「${customer.name}」を削除しますか？\n※過去の訪問履歴は残ります。`)) return;
+
+        customer.isActive = false;
+        Store.save();
+        this.renderCustomers();
+    },
+
+    deleteProduct(id) {
+        const product = Store.data.products.find(p => p.id === id);
+        if (!product) return;
+        if (!confirm(`「${product.name}」を削除しますか？\n※過去の訪問履歴は残ります。`)) return;
+
+        product.isActive = false;
+        Store.save();
+        this.renderProducts();
     }
 };
 
