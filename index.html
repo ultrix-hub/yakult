@@ -347,6 +347,26 @@
             <div class="input-group">
                 <input type="text" id="master-customer-search" class="form-control" placeholder="顧客検索..." oninput="masterManager.renderCustomers()">
             </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                <select id="master-customer-day-filter" class="form-control" style="flex:1; min-width:130px;" onchange="masterManager.renderCustomers()">
+                    <option value="all">曜日: すべて</option>
+                    <option value="Monday">月曜</option>
+                    <option value="Tuesday">火曜</option>
+                    <option value="Wednesday">水曜</option>
+                    <option value="Thursday">木曜</option>
+                    <option value="Friday">金曜</option>
+                    <option value="Saturday">土曜</option>
+                    <option value="Sunday">日曜</option>
+                    <option value="ondemand">都度訪問</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                <button class="btn btn-secondary btn-sm" onclick="masterManager.exportCustomersCSV()">顧客CSVダウンロード</button>
+                <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
+                    顧客CSV読み込み
+                    <input type="file" id="master-customer-csv-input" accept=".csv,text/csv" style="display:none;" onchange="masterManager.importCustomersCSV(this)">
+                </label>
+            </div>
             <div id="master-customer-list"></div>
         </div>
 
@@ -747,6 +767,7 @@ const dashboard = {
                     <div style="text-align:right;">
                         <div style="font-weight:bold; color:var(--primary-color);">${total > 0 ? '¥'+Utils.formatMoney(total) : ''}</div>
                         <div style="font-size:0.7rem; color:#888;">集金: ¥${Utils.formatMoney(v.collectionAmount)}</div>
+                        <button class="btn btn-danger btn-sm" style="margin-top:6px;" onclick="dashboard.deleteVisit(event, '${v.id}')">削除</button>
                     </div>
                 `;
                 div.onclick = () => { if(confirm('この履歴をもとに再入力しますか？')) visitManager.reEnter(v); };
@@ -754,6 +775,25 @@ const dashboard = {
             });
         }
         visitManager.updateNavAlerts();
+    },
+
+    deleteVisit(event, visitId) {
+        event.stopPropagation();
+        const index = Store.data.visits.findIndex(v => v.id === visitId);
+        if (index < 0) return;
+        const visit = Store.data.visits[index];
+        const customer = Store.data.customers.find(c => c.id === visit.customerId);
+        const customerName = customer ? customer.name : '不明な顧客';
+        if (!confirm(`訪問記録を削除しますか？\n顧客: ${customerName}\n日時: ${Utils.formatDate(visit.timestamp)}`)) return;
+
+        Store.data.visits.splice(index, 1);
+        if (visit.status === 'absent' && customer && customer.absentDate === visit.dateStr) {
+            customer.absentAlert = false;
+            customer.absentDate = '';
+        }
+
+        Store.save();
+        this.render();
     }
 };
 
@@ -1119,6 +1159,7 @@ const visitManager = {
  */
 const masterManager = {
     currentTab: 'customer',
+    dragCustomerId: null,
 
     switchTab(tab) {
         this.currentTab = tab;
@@ -1138,15 +1179,26 @@ const masterManager = {
     renderCustomers() {
         const list = document.getElementById('master-customer-list');
         const filter = document.getElementById('master-customer-search').value.toLowerCase();
+        const dayFilter = document.getElementById('master-customer-day-filter').value;
         list.innerHTML = '';
         const dayMap = { Monday:'月', Tuesday:'火', Wednesday:'水', Thursday:'木', Friday:'金', Saturday:'土', Sunday:'日' };
-        
-        Store.data.customers.filter(c => c.isActive).forEach(c => {
-            if (filter && !c.name.toLowerCase().includes(filter) && !(c.office && c.office.toLowerCase().includes(filter))) return;
+
+        const customers = Store.data.customers
+            .filter(c => c.isActive)
+            .filter(c => {
+                if (filter && !c.name.toLowerCase().includes(filter) && !(c.office && c.office.toLowerCase().includes(filter))) return false;
+                if (dayFilter === 'all') return true;
+                if (dayFilter === 'ondemand') return !!c.isOnDemand;
+                return !c.isOnDemand && c.visitDay === dayFilter;
+            });
+
+        customers.forEach(c => {
             
             const div = document.createElement('div');
             div.className = 'card';
             div.style.marginBottom = '8px';
+            div.style.cursor = 'grab';
+            div.draggable = true;
             const dayLabel = c.isOnDemand ? '都度訪問' : (dayMap[c.visitDay]||'未設定') + '曜';
             div.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -1163,8 +1215,16 @@ const masterManager = {
                     </div>
                 </div>
             `;
+            div.addEventListener('dragstart', (e) => this.onCustomerDragStart(e, c.id));
+            div.addEventListener('dragover', (e) => this.onCustomerDragOver(e));
+            div.addEventListener('drop', (e) => this.onCustomerDrop(e, c.id));
+            div.addEventListener('dragend', () => this.onCustomerDragEnd());
             list.appendChild(div);
         });
+
+        if (customers.length === 0) {
+            list.innerHTML = '<div class="text-center text-muted" style="padding:16px;">該当する顧客がいません</div>';
+        }
     },
 
     renderProducts() {
@@ -1322,6 +1382,181 @@ const masterManager = {
         product.isActive = false;
         Store.save();
         this.renderProducts();
+    },
+
+    onCustomerDragStart(event, customerId) {
+        this.dragCustomerId = customerId;
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', customerId);
+    },
+
+    onCustomerDragOver(event) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+    },
+
+    onCustomerDrop(event, targetCustomerId) {
+        event.preventDefault();
+        const sourceCustomerId = this.dragCustomerId || event.dataTransfer.getData('text/plain');
+        if (!sourceCustomerId || sourceCustomerId === targetCustomerId) return;
+        this.reorderCustomers(sourceCustomerId, targetCustomerId);
+    },
+
+    onCustomerDragEnd() {
+        this.dragCustomerId = null;
+    },
+
+    reorderCustomers(sourceCustomerId, targetCustomerId) {
+        const sourceIndex = Store.data.customers.findIndex(c => c.id === sourceCustomerId);
+        if (sourceIndex < 0) return;
+        const [moved] = Store.data.customers.splice(sourceIndex, 1);
+        const targetIndex = Store.data.customers.findIndex(c => c.id === targetCustomerId);
+        if (targetIndex < 0) {
+            Store.data.customers.push(moved);
+        } else {
+            Store.data.customers.splice(targetIndex, 0, moved);
+        }
+
+        Store.save();
+        this.renderCustomers();
+    },
+
+    escapeCSV(value) {
+        const str = (value ?? '').toString();
+        return `"${str.replace(/"/g, '""')}"`;
+    },
+
+    exportCustomersCSV() {
+        const headers = ['id', 'name', 'office', 'isOnDemand', 'visitDay', 'phone', 'address', 'defaultPayment', 'memo', 'isActive'];
+        const rows = [headers.join(',')];
+        Store.data.customers.forEach(c => {
+            rows.push([
+                this.escapeCSV(c.id),
+                this.escapeCSV(c.name),
+                this.escapeCSV(c.office),
+                this.escapeCSV(!!c.isOnDemand),
+                this.escapeCSV(c.visitDay),
+                this.escapeCSV(c.phone),
+                this.escapeCSV(c.address),
+                this.escapeCSV(c.defaultPayment),
+                this.escapeCSV(c.memo),
+                this.escapeCSV(c.isActive !== false)
+            ].join(','));
+        });
+
+        const csv = '\uFEFF' + rows.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `customers_${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
+    },
+
+    parseCSVLine(line) {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') {
+                if (inQuotes && line[i + 1] === '"') {
+                    current += '"';
+                    i++;
+                } else {
+                    inQuotes = !inQuotes;
+                }
+            } else if (ch === ',' && !inQuotes) {
+                result.push(current);
+                current = '';
+            } else {
+                current += ch;
+            }
+        }
+        result.push(current);
+        return result;
+    },
+
+    importCustomersCSV(input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const text = e.target.result.replace(/^\uFEFF/, '');
+                const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
+                if (lines.length < 2) return alert('CSVにデータ行がありません');
+
+                const headers = this.parseCSVLine(lines[0]).map(h => h.trim());
+                const indexOf = (names) => {
+                    for (const n of names) {
+                        const idx = headers.indexOf(n);
+                        if (idx >= 0) return idx;
+                    }
+                    return -1;
+                };
+
+                const idx = {
+                    id: indexOf(['id', 'ID']),
+                    name: indexOf(['name', '名前']),
+                    office: indexOf(['office', '事業所']),
+                    isOnDemand: indexOf(['isOnDemand', '都度訪問']),
+                    visitDay: indexOf(['visitDay', '訪問曜日']),
+                    phone: indexOf(['phone', '電話']),
+                    address: indexOf(['address', '住所']),
+                    defaultPayment: indexOf(['defaultPayment', '既定支払']),
+                    memo: indexOf(['memo', 'メモ']),
+                    isActive: indexOf(['isActive', '有効'])
+                };
+
+                if (idx.name < 0) return alert('CSVに name(または 名前) 列がありません');
+
+                let importedCount = 0;
+                lines.slice(1).forEach(line => {
+                    const cols = this.parseCSVLine(line);
+                    const name = (cols[idx.name] || '').trim();
+                    if (!name) return;
+
+                    const id = idx.id >= 0 && cols[idx.id] ? cols[idx.id].trim() : Store.generateId();
+                    const existing = Store.data.customers.find(c => c.id === id);
+                    const toBool = (v, defaultVal = false) => {
+                        if (v === undefined || v === null || v === '') return defaultVal;
+                        return ['true', '1', 'yes', 'on'].includes(String(v).toLowerCase());
+                    };
+
+                    const row = {
+                        id,
+                        name,
+                        office: idx.office >= 0 ? (cols[idx.office] || '').trim() : '',
+                        isOnDemand: idx.isOnDemand >= 0 ? toBool((cols[idx.isOnDemand] || '').trim(), false) : false,
+                        visitDay: idx.visitDay >= 0 ? (cols[idx.visitDay] || 'Monday').trim() : 'Monday',
+                        phone: idx.phone >= 0 ? (cols[idx.phone] || '').trim() : '',
+                        address: idx.address >= 0 ? (cols[idx.address] || '').trim() : '',
+                        defaultPayment: idx.defaultPayment >= 0 ? (cols[idx.defaultPayment] || 'cash').trim() : 'cash',
+                        memo: idx.memo >= 0 ? (cols[idx.memo] || '').trim() : '',
+                        isActive: idx.isActive >= 0 ? toBool((cols[idx.isActive] || '').trim(), true) : true
+                    };
+
+                    if (existing) {
+                        Object.assign(existing, row);
+                    } else {
+                        Store.data.customers.push(row);
+                    }
+                    importedCount++;
+                });
+
+                Store.save();
+                this.renderCustomers();
+                alert(`${importedCount}件の顧客データを取り込みました`);
+            } catch (err) {
+                console.error(err);
+                alert('CSVの読み込みに失敗しました');
+            } finally {
+                input.value = '';
+            }
+        };
+        reader.readAsText(file);
     }
 };
 
